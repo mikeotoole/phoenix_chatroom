@@ -17,6 +17,7 @@ defmodule Chatroom.Router do
     pipe_through :browser # Use the default browser stack
 
     get "/", PageController, :index
+    get "/call", CallController, :index
   end
 
   # Other scopes may use custom stacks.

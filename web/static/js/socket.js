@@ -60,25 +60,144 @@ socket.connect()
 //   .receive("error", resp => { console.log("Unable to join", resp) })
 
 // Added for chat.
-let channel = socket.channel("lobby", {});
+let chatChannel = socket.channel("lobby", {});
 let list    = $('#message-list');
 let message = $('#message');
 let name    = $('#name');
 
 message.on('keypress', event => {
   if (event.keyCode == 13) {
-    channel.push('new_message', { name: name.val(), message: message.val() });
+    chatChannel.push('new_message', { name: name.val(), message: message.val() });
     message.val('');
   }
 });
 
-channel.on('new_message', payload => {
+chatChannel.on('new_message', payload => {
+  console.log("Got new chat message: ", payload);
   list.append(`<b>${payload.name || 'Anonymous'}:</b> ${payload.message}<br>`);
   list.prop({scrollTop: list.prop("scrollHeight")});
 });
 
-channel.join()
+chatChannel.join()
   .receive("ok", resp => { console.log("Joined successfully", resp) })
   .receive("error", resp => { console.log("Unable to join", resp) })
+
+let callChannel = socket.channel("call", {})
+callChannel.join()
+  .receive("ok", () => { console.log("Successfully joined call channel") })
+  .receive("error", () => { console.log("Unable to join call channel") })
+
+callChannel.on('message', payload => {
+  console.log("Got new call message: ", payload);
+  let message = JSON.parse(payload.body);
+  if (message.sdp) {
+    gotRemoteDescription(message);
+  } else {
+    gotRemoteIceCandidate(message);
+  }
+})
+let localStream, peerConnection;
+let localVideo = document.getElementById("localVideo");
+let remoteVideo = document.getElementById("remoteVideo");
+let connectButton = document.getElementById("connect");
+let callButton = document.getElementById("call");
+let hangupButton = document.getElementById("hangup");
+
+function gotStream(stream) {
+   console.log("Received local stream");
+   localVideo.src = URL.createObjectURL(stream);
+   localStream = stream;
+   setupPeerConnection();
+}
+
+function connect() {
+  console.log("Requesting local stream");
+  navigator.getUserMedia({audio:true, video:true}, gotStream, error => {
+       console.log("getUserMedia error: ", error);
+   });
+}
+
+function setupPeerConnection() {
+  connectButton.disabled = true;
+  callButton.disabled = false;
+  hangupButton.disabled = false;
+  console.log("Waiting for call");
+
+  let servers = {
+    "iceServers": [{
+      "url": "stun:stun.example.org"
+    }]
+  };
+
+  peerConnection = new RTCPeerConnection(servers);
+  console.log("Created local peer connection");
+  peerConnection.onicecandidate = gotLocalIceCandidate;
+  peerConnection.onaddstream = gotRemoteStream;
+  peerConnection.addStream(localStream);
+  console.log("Added localStream to localPeerConnection");
+}
+
+function call() {
+  callButton.disabled = true;
+  console.log("Starting call");
+  peerConnection.createOffer(gotLocalDescription, handleError);
+}
+
+function gotLocalDescription(description){
+  peerConnection.setLocalDescription(description, () => {
+    callChannel.push("message", {
+      body: JSON.stringify({ "sdp": peerConnection.localDescription })
+    });
+  }, handleError);
+  console.log("Offer from localPeerConnection: \n" + description.sdp);
+}
+
+function gotRemoteDescription(description){
+  console.log("Answer from remotePeerConnection: \n" + description.sdp);
+  peerConnection.setRemoteDescription(new RTCSessionDescription(description.sdp));
+  peerConnection.createAnswer(gotLocalDescription, handleError);
+}
+
+function gotRemoteStream(event) {
+  remoteVideo.src = URL.createObjectURL(event.stream);
+  console.log("Received remote stream");
+}
+
+function gotLocalIceCandidate(event) {
+  if (event.candidate) {
+    console.log("Local ICE candidate: \n" + event.candidate.candidate);
+    callChannel.push("message", {body: JSON.stringify({
+        "candidate": event.candidate
+    })});
+  }
+}
+
+function gotRemoteIceCandidate(event) {
+  callButton.disabled = true;
+  if (event.candidate) {
+    peerConnection.addIceCandidate(new RTCIceCandidate(event.candidate));
+    console.log("Remote ICE candidate: \n " + event.candidate.candidate);
+  }
+}
+
+function hangup() {
+  console.log("Ending call");
+  if (peerConnection.peerIdentity) peerConnection.close();
+  localVideo.src = null;
+  peerConnection = null;
+  hangupButton.disabled = true;
+  connectButton.disabled = false;
+  callButton.disabled = true;
+}
+
+function handleError(error) {
+  console.log('ERROR: ' + error.name + ": " + error.message);
+}
+
+hangupButton.disabled = true;
+callButton.disabled = true;
+connectButton.onclick = connect;
+callButton.onclick = call;
+hangupButton.onclick = hangup;
 
 export default socket
